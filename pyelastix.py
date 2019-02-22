@@ -233,14 +233,14 @@ def _clear_temp_dir():
             pass
 
 
-def _get_image_paths(im1, im2):
+def _get_image_paths(*ims):
     """ If the images are paths to a file, checks whether the file exist
     and return the paths. If the images are numpy arrays, writes them
     to disk and returns the paths of the new files.
     """
     
     paths = []
-    for im in [im1, im2]:
+    for im in ims:
         if im is None:
             # Groupwise registration: only one image (ndim+1 dimensions)
             paths.append(paths[0])
@@ -248,7 +248,7 @@ def _get_image_paths(im1, im2):
         
         if isinstance(im, str):
             # Given a location
-            if os.path.isfile(im1):
+            if os.path.isfile(im):
                 paths.append(im)
             else:
                 raise ValueError('Image location does not exist.')
@@ -400,7 +400,7 @@ class Progress:
 # %% The Elastix registration class
 
 
-def register(im1, im2, params, exact_params=False, verbose=1):
+def register(moving, ref, params, thr_moving=None, exact_params=False, verbose=1):
     """ register(im1, im2, params, exact_params=False, verbose=1)
     
     Perform the registration of `im1` to `im2`, using the given 
@@ -436,15 +436,16 @@ def register(im1, im2, params, exact_params=False, verbose=1):
     In this case the resulting `field` is a list of fields, each
     indicating the deformation to the "average" image.
     """
+    print('Registering with jhennies/pyelastix')
     
     # Clear dir
     tempdir = get_tempdir()
     _clear_temp_dir()
     
     # Reference image
-    refIm = im1
-    if isinstance(im1, (tuple,list)):
-        refIm = im1[0]
+    refIm = ref
+    if isinstance(ref, (tuple,list)):
+        refIm = ref[0]
     
     # Check parameters
     if not exact_params:
@@ -452,42 +453,45 @@ def register(im1, im2, params, exact_params=False, verbose=1):
     if isinstance(params, Parameters):
         params = params.as_dict()
     
-    # Groupwise?
-    if im2 is None:
-        # todo: also allow using a constraint on the "last dimension"
-        if not isinstance(im1, (tuple,list)):
-            raise ValueError('im2 is None, but im1 is not a list.')
-        #
-        ims = im1
-        ndim = ims[0].ndim
-        # Create new image that is a combination of all images
-        N = len(ims)
-        new_shape = (N,) + ims[0].shape
-        im1 = np.zeros(new_shape, ims[0].dtype)
-        for i in range(N):
-            im1[i] = ims[i]
-        # Set parameters
-        #params['UseCyclicTransform'] = True # to be chosen by user
-        params['FixedImageDimension'] = im1.ndim
-        params['MovingImageDimension'] = im1.ndim
-        params['FixedImagePyramid'] = 'FixedSmoothingImagePyramid'
-        params['MovingImagePyramid'] = 'MovingSmoothingImagePyramid'
-        params['Metric'] = 'VarianceOverLastDimensionMetric'
-        params['Transform'] = 'BSplineStackTransform'
-        params['Interpolator'] = 'ReducedDimensionBSplineInterpolator'
-        params['SampleLastDimensionRandomly'] = True
-        params['NumSamplesLastDimension'] = 5
-        params['SubtractMean'] = True
-        # No smoothing along that dimenson
-        pyramidsamples = []
-        for i in range(params['NumberOfResolutions']):
-            pyramidsamples.extend( [0]+[2**i]*ndim )
-        pyramidsamples.reverse()
-        params['ImagePyramidSchedule'] = pyramidsamples
+    # # Groupwise?
+    # if im0 is None:
+    #     # todo: also allow using a constraint on the "last dimension"
+    #     if not isinstance(ref_im, (tuple,list)):
+    #         raise ValueError('im2 is None, but im1 is not a list.')
+    #     #
+    #     ims = ref_im
+    #     ndim = ims[0].ndim
+    #     # Create new image that is a combination of all images
+    #     N = len(ims)
+    #     new_shape = (N,) + ims[0].shape
+    #     ref_im = np.zeros(new_shape, ims[0].dtype)
+    #     for i in range(N):
+    #         ref_im[i] = ims[i]
+    #     # Set parameters
+    #     #params['UseCyclicTransform'] = True # to be chosen by user
+    #     params['FixedImageDimension'] = ref_im.ndim
+    #     params['MovingImageDimension'] = ref_im.ndim
+    #     params['FixedImagePyramid'] = 'FixedSmoothingImagePyramid'
+    #     params['MovingImagePyramid'] = 'MovingSmoothingImagePyramid'
+    #     params['Metric'] = 'VarianceOverLastDimensionMetric'
+    #     params['Transform'] = 'BSplineStackTransform'
+    #     params['Interpolator'] = 'ReducedDimensionBSplineInterpolator'
+    #     params['SampleLastDimensionRandomly'] = True
+    #     params['NumSamplesLastDimension'] = 5
+    #     params['SubtractMean'] = True
+    #     # No smoothing along that dimenson
+    #     pyramidsamples = []
+    #     for i in range(params['NumberOfResolutions']):
+    #         pyramidsamples.extend( [0]+[2**i]*ndim )
+    #     pyramidsamples.reverse()
+    #     params['ImagePyramidSchedule'] = pyramidsamples
     
     # Get paths of input images
-    path_im1, path_im2 = _get_image_paths(im1, im2)
-    
+    if thr_moving is None:
+        path_ref, path_moving = _get_image_paths(ref, moving)
+    else:
+        path_ref, path_moving, path_thr_moving = _get_image_paths(ref, moving, thr_moving)
+
     # Determine path of parameter file and write params
     path_params = _write_parameter_file(params)
     
@@ -498,16 +502,24 @@ def register(im1, im2, params, exact_params=False, verbose=1):
     if True:
         
         # Compile command to execute
-        command = [get_elastix_exes()[0],
-                   '-m', path_im1, '-f', path_im2, 
-                   '-out', tempdir, '-p', path_params]
+        if thr_moving is None:
+            command = [get_elastix_exes()[0],
+                       '-m', path_moving, '-f', path_ref,
+                       '-out', tempdir, '-p', path_params]
+        else:
+            command = [get_elastix_exes()[0],
+                       '-m', path_thr_moving, '-f', path_ref,
+                       '-out', tempdir, '-p', path_params]
+        command = str.join(" ", command)
+        print(command)
         if verbose:
             print("Calling Elastix to register images ...")
         _system3(command, verbose)
         
         # Try and load result
         try:
-            a = _read_image_data('result.0.mhd')
+            if thr_moving is None:
+                a = _read_image_data('result.0.mhd')
         except IOError as why:
             tmp = "An error occured during registration: " + str(why)
             raise RuntimeError(tmp)
@@ -516,19 +528,27 @@ def register(im1, im2, params, exact_params=False, verbose=1):
     if True:
         
         # Compile command to execute
-        command = [get_elastix_exes()[1],
-                   '-def', 'all', '-out', tempdir, '-tp', path_trafo_params]
+        if thr_moving is None:
+            command = [get_elastix_exes()[1],
+                       '-def', 'all', '-out', tempdir, '-tp', path_trafo_params]
+        else:
+            command = [get_elastix_exes()[1],
+                       '-def', 'all', '-out', tempdir, '-tp', path_trafo_params, '-in', path_moving]
+        command = str.join(" ", command)
+        print(command)
         _system3(command, verbose)
         
         # Try and load result
         try:
+            if thr_moving is not None:
+                a = _read_image_data('result.mhd')
             b = _read_image_data('deformationField.mhd')
         except IOError as why:
             tmp = "An error occured during transformation: " + str(why)
             raise RuntimeError(tmp)
     
     # Get deformation fields (for each image)
-    if im2 is None:
+    if moving is None:
         fields = [b[i] for i in range(b.shape[0])]
     else:
         fields = [b]
@@ -546,7 +566,7 @@ def register(im1, im2, params, exact_params=False, verbose=1):
             field = [field[:,:,:,:,d] for d in range(4)]
         fields[i] = tuple(field)
     
-    if im2 is not None:
+    if moving is not None:
         fields = fields[0]  # For pairwise reg, return 1 field, not a list
     
     # Clean and return
